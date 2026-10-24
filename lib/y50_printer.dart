@@ -93,10 +93,13 @@ class Y50Printer {
 
   /// Connect to a specific device (Convenience method)
   static Future<String?> connectToDevice(BluetoothDevice device) async {
-    await setDevice(
+    final configured = await setDevice(
       name: device.name ?? "Unknown",
       address: device.address ?? "",
     );
+    if (configured == null) {
+      throw PlatformException(code: 'SET_DEVICE_ERROR', message: 'Failed to select printer');
+    }
     return await connect();
   }
 

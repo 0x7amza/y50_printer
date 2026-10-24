@@ -21,6 +21,13 @@ class Y50PrinterPlugin : FlutterPlugin, MethodCallHandler {
     
     // Callbacks for asynchronous connection
     private var connectionCallback: Result? = null
+    private var connectionTimeout: Runnable? = null
+    private var connectionAccepted = false
+
+    private fun clearConnectionTimeout() {
+        connectionTimeout?.let { handler.removeCallbacks(it) }
+        connectionTimeout = null
+    }
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         channel = MethodChannel(flutterPluginBinding.binaryMessenger, "y50_printer")
@@ -84,6 +91,12 @@ class Y50PrinterPlugin : FlutterPlugin, MethodCallHandler {
                     return
                 }
                 
+                if (connectionCallback != null) {
+                    result.error("CONNECTION_BUSY", "A connection is already pending", null)
+                    return
+                }
+                clearConnectionTimeout()
+                connectionAccepted = false
                 connectionCallback = result
                 
                 // Background thread for connection
@@ -92,24 +105,36 @@ class Y50PrinterPlugin : FlutterPlugin, MethodCallHandler {
                         printerHelper?.connect(true)
                     } catch (e: Exception) {
                         handler.post {
-                            connectionCallback?.error("CONNECT_ERROR", e.message, null)
-                            connectionCallback = null
+                            if (connectionCallback === result) {
+                                clearConnectionTimeout()
+                                connectionCallback = null
+                                result.error("CONNECT_ERROR", e.message, null)
+                            }
                         }
                     }
                 }.start()
                 
                 // Timeout
-                handler.postDelayed({
-                    if (connectionCallback != null) {
+                val timeout = Runnable {
+                    if (connectionCallback === result) {
                          val cb = connectionCallback
                          connectionCallback = null
+                         connectionTimeout = null
+                         connectionAccepted = false
+                         runCatching { printerHelper?.connect(false) }
                          cb?.error("TIMEOUT", "Connection timeout after 15 seconds", null)
                     }
-                }, 15000)
+                }
+                connectionTimeout = timeout
+                handler.postDelayed(timeout, 15000)
             }
 
             "disconnect" -> {
                 try {
+                    clearConnectionTimeout()
+                    connectionAccepted = false
+                    connectionCallback?.error("CANCELLED", "Connection cancelled", null)
+                    connectionCallback = null
                     printerHelper?.connect(false)
                     result.success("Disconnected")
                 } catch (e: Exception) {
@@ -139,6 +164,10 @@ class Y50PrinterPlugin : FlutterPlugin, MethodCallHandler {
                  try {
                     if (printerHelper == null) {
                         result.error("NOT_INITIALIZED", "Printer not initialized", null)
+                        return
+                    }
+                    if (printerHelper?.check() != true) {
+                        result.error("NOT_CONNECTED", "Printer is not connected", null)
                         return
                     }
 
@@ -216,8 +245,16 @@ class Y50PrinterPlugin : FlutterPlugin, MethodCallHandler {
     }
     
     private fun setupPrinterListeners() {
+        val source = printerHelper
         printerHelper?.onConnectionSuccess = {
             handler.post {
+                if (printerHelper !== source) return@post
+                if (connectionCallback == null) {
+                    if (!connectionAccepted) runCatching { printerHelper?.connect(false) }
+                    return@post
+                }
+                clearConnectionTimeout()
+                connectionAccepted = true
                 connectionCallback?.success("Connected successfully")
                 connectionCallback = null
                 channel.invokeMethod("onConnected", null)
@@ -227,6 +264,9 @@ class Y50PrinterPlugin : FlutterPlugin, MethodCallHandler {
         
         printerHelper?.onConnectionFailed = { error ->
             handler.post {
+                if (printerHelper !== source) return@post
+                clearConnectionTimeout()
+                connectionAccepted = false
                 if (connectionCallback != null) {
                      connectionCallback?.error("CONNECTION_FAILED", error, null)
                      connectionCallback = null
@@ -238,6 +278,7 @@ class Y50PrinterPlugin : FlutterPlugin, MethodCallHandler {
         
         printerHelper?.onLog = { msg ->
             handler.post {
+                if (printerHelper !== source) return@post
                 channel.invokeMethod("onLog", msg)
             }
         }
@@ -246,6 +287,13 @@ class Y50PrinterPlugin : FlutterPlugin, MethodCallHandler {
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        clearConnectionTimeout()
+        connectionAccepted = false
+        connectionCallback?.error("CANCELLED", "Application closed", null)
+        connectionCallback = null
+        printerHelper?.onConnectionSuccess = null
+        printerHelper?.onConnectionFailed = null
+        printerHelper?.onLog = null
         channel.setMethodCallHandler(null)
         printerHelper?.release()
     }
