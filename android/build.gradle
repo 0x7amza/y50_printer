@@ -18,7 +18,7 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://gitee.com/it_space/bluetooth-sdk/raw/master") }
+
     }
 }
 
@@ -51,7 +51,8 @@ android {
     dependencies {
         testImplementation("org.jetbrains.kotlin:kotlin-test")
         testImplementation("org.mockito:mockito-core:5.0.0")
-        implementation("com.yx.print:PrintSDK:63")
+        // PrintSDK loaded from local AAR to avoid gitee.com network timeouts
+        implementation(files("libs/PrintSDK-63.aar"))
     }
 
     testOptions {
